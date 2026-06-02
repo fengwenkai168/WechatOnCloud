@@ -54,20 +54,15 @@ ENV LANG=zh_CN.UTF-8 \
     LC_ALL=zh_CN.UTF-8 \
     LIBGL_ALWAYS_SOFTWARE=1
 
-# 让 KasmVNC web 客户端默认开启 IME 输入模式：
-# 用户用本地（客户端）输入法打中文，拼音联想在本地完成、只把成品汉字发进容器，无需容器内装 IME。
-# 默认值仅在浏览器未存过该设置时生效，不会覆盖用户手动改过的偏好。
+# 改 KasmVNC web 客户端的 webpack 产物 dist/*.bundle.js：
+#  (1) 默认开启 IME 输入模式：本地（客户端）输入法打中文，拼音联想在本地完成、只把成品汉字
+#      发进容器，无需容器内装 IME。默认值仅在浏览器未存过该设置时生效，不覆盖用户手动改过的偏好。
+#  (2) 修复 noVNC 中文 IME 输入：原实现靠隐藏 textarea 差分逐字符重发 keysym，会泄漏中间拼音、
+#      累积不 reset、退格风暴，导致大量丢字 / ~21 字卡住 / 跨浏览器不稳。改为只在 compositionend
+#      用 e.data 直发成品字符串（详见 woc-www-patch.sh / woc-ime.pl）。
 # 注意：实际加载的是 webpack 产物 dist/main.bundle.js（app/ui.js 是未打包源码、运行时不加载），故必须改 bundle。
-# 末尾的 grep 作为断言：若 base 镜像换了打包结构、改不到任何文件，则构建直接失败而非静默放过。
-RUN set -eux; \
-    patched=0; \
-    for f in /usr/share/kasmvnc/www/dist/*.bundle.js /usr/local/share/kasmvnc/www/dist/*.bundle.js; do \
-        if [ -f "$f" ] && grep -q "initSetting('enable_ime', false)" "$f"; then \
-            sed -i "s/initSetting('enable_ime', false)/initSetting('enable_ime', true)/g" "$f"; \
-            patched=1; \
-        fi; \
-    done; \
-    [ "$patched" = "1" ]
+COPY woc-www-patch.sh woc-ime.pl /woc/
+RUN chmod +x /woc/woc-www-patch.sh && /woc/woc-www-patch.sh
 
 # 微信下载/解压控制脚本（运行时由面板经 docker exec 触发，状态写入数据卷 /config/.woc-state）
 COPY wechat-ctl.sh /woc/wechat-ctl.sh

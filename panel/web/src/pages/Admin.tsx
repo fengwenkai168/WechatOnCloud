@@ -554,6 +554,9 @@ function InstanceAdminCard({
             <button className="btn-text" onClick={onAssign}>
               分配账户
             </button>
+            <button className="btn-text" onClick={() => window.open(api.instanceLogsUrl(inst.id), '_blank')} title="查看实例容器日志（排错）">
+              日志
+            </button>
             <button className="btn-text danger" onClick={onDelete}>
               删除
             </button>

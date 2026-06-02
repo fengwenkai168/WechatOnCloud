@@ -42,6 +42,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const [dragging, setDragging] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
   const [files, setFiles] = useState<TFile[]>([]);
+  const [showClip, setShowClip] = useState(false);
+  const [clipText, setClipText] = useState('');
   const [uploading, setUploading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [control, setControl] = useState<{ free: boolean; mine: boolean; holder: string | null } | null>(null);
@@ -61,7 +63,20 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     setFrameLoaded(false);
     setShowFiles(false);
     setFiles([]);
+    setShowClip(false);
+    setClipText('');
   }, [id]);
+
+  // 实例未就绪（启动中 / 安装中 / 上下文状态未刷新）时，每 3s 拉取最新状态：
+  // 就绪后自动进入桌面，无需手动刷新（修复"安装完进度 100% 仍提示无实例"）。
+  useEffect(() => {
+    if (showVnc || !id) return;
+    const t = window.setInterval(() => {
+      if (!document.hidden) reload();
+    }, 3000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showVnc, id]);
 
   // 文件拖到窗口 → 弹出落区（覆盖 iframe 接住 drop）
   useEffect(() => {
@@ -236,6 +251,52 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     }
   };
 
+  // 跨设备剪贴板（文本）：通过同源 iframe 直接喂给 KasmVNC 自带的剪贴板 textarea 并触发其发送逻辑
+  // （内部走 RFB.clipboardPasteFrom → clientCutText）。不依赖浏览器异步剪贴板 API，故 http/局域网 IP 下也可用，
+  // 规避了"非安全上下文禁用 navigator.clipboard 导致粘贴失败"的问题。文本会进入容器系统剪贴板，
+  // 在微信输入框按 Ctrl+V 即可粘贴。
+  const pushClipboardToRemote = (text: string): boolean => {
+    try {
+      const doc = frameRef.current?.contentDocument;
+      const ta = doc?.getElementById('noVNC_clipboard_text') as HTMLTextAreaElement | null;
+      if (!doc || !ta) return false;
+      ta.value = text;
+      ta.dispatchEvent(new (frameRef.current!.contentWindow as any).Event('change', { bubbles: true }));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const sendClip = () => {
+    const t = clipText;
+    if (!t) {
+      toast('请先输入要发送的文本', 'error');
+      return;
+    }
+    if (pushClipboardToRemote(t)) {
+      toast('已发送到容器剪贴板，请在微信输入框按 Ctrl+V 粘贴', 'ok');
+    } else {
+      toast('发送失败：桌面尚未连接', 'error');
+    }
+  };
+
+  // 读取容器（微信侧）当前剪贴板内容到本框，便于把容器内复制的文字带回本地
+  const pullClipboardFromRemote = () => {
+    try {
+      const doc = frameRef.current?.contentDocument;
+      const ta = doc?.getElementById('noVNC_clipboard_text') as HTMLTextAreaElement | null;
+      if (ta) {
+        setClipText(ta.value || '');
+        toast('已读取容器剪贴板', 'ok');
+      } else {
+        toast('读取失败：桌面尚未连接', 'error');
+      }
+    } catch {
+      toast('读取失败', 'error');
+    }
+  };
+
   const restartInstance = async () => {
     const ok = await confirm({
       title: '重启该实例？',
@@ -299,6 +360,13 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
             >
               文件
             </button>
+            <button
+              className="ws-action"
+              title="把文本发送到容器剪贴板（局域网 http 下也可用）"
+              onClick={() => setShowClip((v) => !v)}
+            >
+              剪贴板
+            </button>
             {isAdmin && (
               <button className="ws-action" title="重启实例（修复卡死/最小化丢失）" onClick={restartInstance}>
                 重启
@@ -333,18 +401,44 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
             ) : (
               <div className="iv-notice-sub">请联系管理员启动该实例</div>
             )}
+            {isAdmin && (
+              <button className="btn-text" onClick={() => window.open(api.instanceLogsUrl(id), '_blank')}>
+                查看日志
+              </button>
+            )}
+          </div>
+        </div>
+      ) : ['downloading', 'extracting', 'installing'].includes(inst.wechat.phase) ? (
+        <div className="iv-stage iv-center">
+          <div className="iv-notice">
+            <div className="spinner" />
+            <div className="iv-notice-title">微信安装中…</div>
+            <div className="iv-notice-sub">
+              {inst.wechat.message || '请稍候'}
+              {inst.wechat.percent >= 0 ? ` · ${inst.wechat.percent}%` : ''} ——完成后自动进入，无需刷新
+            </div>
           </div>
         </div>
       ) : !installed ? (
         <div className="iv-stage iv-center">
           <div className="iv-notice">
-            <div className="iv-notice-title">微信尚未安装</div>
+            <div className="iv-notice-title">{inst.wechat.phase === 'error' ? '微信安装出错' : '微信尚未安装'}</div>
+            <div className="iv-notice-sub">
+              {inst.wechat.phase === 'error'
+                ? inst.wechat.message || '安装失败，可在「管理」重试'
+                : '该实例容器已就绪，但尚未安装微信'}
+            </div>
             {isAdmin ? (
               <button className="btn btn-primary iv-notice-btn" onClick={() => nav('/admin')}>
-                去「管理」下载安装
+                去「管理」{inst.wechat.phase === 'error' ? '重试 / 更新' : '下载安装'}
               </button>
             ) : (
               <div className="iv-notice-sub">请联系管理员在「管理」中下载安装微信</div>
+            )}
+            {isAdmin && (
+              <button className="btn-text" onClick={() => window.open(api.instanceLogsUrl(id), '_blank')}>
+                查看日志
+              </button>
             )}
           </div>
         </div>
@@ -439,6 +533,33 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
                     </button>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {showClip && (
+            <div className="iv-files">
+              <div className="files-head">
+                <span>文本剪贴板</span>
+                <button className="btn-text" onClick={() => setShowClip(false)}>
+                  关闭
+                </button>
+              </div>
+              <textarea
+                className="clip-area"
+                value={clipText}
+                onChange={(e) => setClipText(e.target.value)}
+                placeholder="在此输入或粘贴文本，点「发送到微信」后到微信输入框按 Ctrl+V 粘贴"
+                rows={5}
+              />
+              <button className="btn btn-primary files-upload" onClick={sendClip}>
+                发送到微信（容器剪贴板）
+              </button>
+              <button className="btn-text" style={{ alignSelf: 'flex-start', marginTop: 6 }} onClick={pullClipboardFromRemote}>
+                ↓ 读取容器剪贴板到此框
+              </button>
+              <div className="files-hint">
+                局域网 http 访问时浏览器会禁用系统级剪贴板同步，故用此框中转：文本→容器剪贴板，再在微信里 Ctrl+V。
               </div>
             </div>
           )}

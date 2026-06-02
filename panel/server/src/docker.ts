@@ -312,6 +312,22 @@ export async function downloadFromInstance(inst: Instance, name: string): Promis
   return tar.subarray(512, 512 + size);
 }
 
+// 拉取实例容器日志（末尾 N 行），供前端"查看/导出日志"排错。
+export async function instanceLogs(inst: Instance, tail = 600): Promise<string> {
+  const c = docker.getContainer(inst.containerName);
+  const buf = (await c.logs({ stdout: true, stderr: true, tail, timestamps: true })) as unknown as Buffer;
+  // docker 非 TTY 日志为多路复用流：每帧 8 字节头（[stream,0,0,0,size BE]）+ 负载；解出纯文本。
+  let out = '';
+  let i = 0;
+  while (i + 8 <= buf.length) {
+    const size = buf.readUInt32BE(i + 4);
+    if (size < 0 || i + 8 + size > buf.length) break;
+    out += buf.subarray(i + 8, i + 8 + size).toString('utf8');
+    i += 8 + size;
+  }
+  return out || buf.toString('utf8'); // 兜底：TTY 模式非多路复用
+}
+
 // 实例容器名（供反代构造 target）。
 export function instanceTarget(inst: Instance): string {
   return `http://${inst.containerName}:3000`;

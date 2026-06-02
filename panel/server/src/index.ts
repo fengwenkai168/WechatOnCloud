@@ -45,6 +45,7 @@ import {
   listInstanceFiles,
   downloadFromInstance,
   deleteInstanceFile,
+  instanceLogs,
 } from './docker.js';
 import { createSession, getSession, destroySession, destroyUserSessions } from './sessions.js';
 
@@ -435,6 +436,21 @@ app.post('/api/instances/:id/control/take', async (req, reply) => {
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   controlHolders.set(id, { userId: u.id, username: u.username, at: Date.now() });
   return { mine: true, holder: u.username };
+});
+
+// 查看实例容器日志（仅管理员）：排查"无法进入/未安装/卡死"等。inline 文本，浏览器可直接看/另存。
+app.get('/api/admin/instances/:id/logs', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const inst = findInstance((req.params as any).id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  try {
+    const text = await instanceLogs(inst);
+    reply.header('content-type', 'text/plain; charset=utf-8');
+    return reply.send(text || '（暂无日志）');
+  } catch (e: any) {
+    reply.header('content-type', 'text/plain; charset=utf-8');
+    return reply.send('获取日志失败：' + (e?.message || e));
+  }
 });
 
 // 该实例的微信安装状态（有访问权限即可看）
