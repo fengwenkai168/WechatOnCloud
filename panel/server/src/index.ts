@@ -285,6 +285,32 @@ app.get('/api/instances', async (req, reply) => {
   return { instances: out };
 });
 
+// 用户自助「卡死自愈」：当客户端检测到 VNC 多次干净重连仍连不上（多半是实例 KasmVNC 的 ws 接收器卡死——
+// nginx 仍能serve 静态页让 noVNC 显示"正在连接"，但新 ws 永远 accept 不了，刷新/重启面板都无效、只能重启容器），
+// 客户端调用本接口重启该实例（数据卷保留，约十几秒恢复）。需对该实例有访问权；每实例 3 分钟限一次防重启风暴。
+const lastHealAt = new Map<string, number>();
+app.post('/api/instances/:id/heal', async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  const id = (req.params as any).id;
+  if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const inst = findInstance(id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  const now = Date.now();
+  if (now - (lastHealAt.get(id) || 0) < 180000) {
+    return { ok: true, restarted: false, message: '近期已尝试恢复，请稍候重连' };
+  }
+  lastHealAt.set(id, now);
+  appendPanelLog('WARN', `实例「${inst.name}」(id=${id}) 由 ${u.username} 触发卡死自愈（VNC 连不上 → 重启容器，数据保留）`);
+  try {
+    await runInstance(inst);
+    return { ok: true, restarted: true };
+  } catch (e: any) {
+    appendPanelLog('ERROR', `实例「${inst.name}」(id=${id}) 卡死自愈重启失败：${e?.message || e}`);
+    return reply.code(500).send({ error: '恢复失败：' + (e?.message || e) });
+  }
+});
+
 // 新建实例（仅管理员）：生成凭据 + docker run + 分配访问账户
 app.post('/api/admin/instances', async (req, reply) => {
   const admin = requireAdmin(req, reply);

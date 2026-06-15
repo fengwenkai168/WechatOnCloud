@@ -401,7 +401,28 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
         /* ignore */
       }
       if (Date.now() - rec.t > 120000) rec.n = 0; // 出 2 分钟窗口重置计数
-      if (rec.n >= 2) return; // 自动重连 2 次仍连不上 → 多半是实例服务端卡死，停手（用户需重启实例）
+      if (rec.n >= 2) {
+        // 干净重连 2 次仍连不上 → 多半是实例 KasmVNC 的 ws 接收器卡死（刷新/重启面板都无效，只有重启容器能恢复）。
+        // 请求面板重启该实例自愈；客户端侧也 3 分钟限一次，避免反复触发。重启后整页重载连到全新容器。
+        const HEAL_KEY = 'woc_vncHeal_' + id;
+        let lastHeal = 0;
+        try {
+          lastHeal = Number(sessionStorage.getItem(HEAL_KEY) || '0');
+        } catch {
+          /* ignore */
+        }
+        if (Date.now() - lastHeal < 180000) return; // 近期已自愈过，等它恢复
+        try {
+          sessionStorage.setItem(HEAL_KEY, String(Date.now()));
+        } catch {
+          /* ignore */
+        }
+        api
+          .healInstance(id)
+          .catch(() => {})
+          .finally(() => setTimeout(() => window.location.reload(), 1500));
+        return;
+      }
       rec.n += 1;
       rec.t = Date.now();
       try {
