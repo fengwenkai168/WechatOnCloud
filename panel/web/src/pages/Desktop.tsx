@@ -339,6 +339,28 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showVnc, id]);
 
+  // 切走 App / 锁屏会挂起这条 VNC 的 ws（并非干净关闭）。回到前台时 noVNC 自带的自动重连会立刻开一条
+  // 新 ws，而服务端那条旧连接可能尚未释放 → 新旧 ws 并存把实例 Xvnc 卡死（与已修的页内重挂同一根因，
+  // 只是这次由 noVNC 自动重连触发，是"开一段时间断联→卡死→要重启"的主因）。
+  // 对策：离开较久后回到前台，直接整页重载干净重连（先彻底关旧 ws 再连），从机制上避开并存。
+  // 仅在正展示桌面时生效；阈值可按手机实测微调（手机后台杀 ws 很快，桌面则较慢）。
+  useEffect(() => {
+    if (!showVnc) return;
+    const RESUME_RELOAD_AFTER_MS = 8000; // 离开≥8s 视为 ws 可能已被挂起/断开 → 回前台干净重连
+    let hiddenAt = 0;
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+      } else if (hiddenAt && Date.now() - hiddenAt >= RESUME_RELOAD_AFTER_MS) {
+        window.location.reload();
+      } else {
+        hiddenAt = 0;
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [showVnc]);
+
   if (!id) {
     nav('/', { replace: true });
     return null;
